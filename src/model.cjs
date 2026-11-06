@@ -81,6 +81,23 @@ function serialize(group) {
 
 function plainBody(source) {
   const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const first = /^(-{3,})column(?:\[([^\]]*)\])?(-{3,})$/.exec(lines[0]);
+  if (first) {
+    const separator = first[1] + 'column' + first[3];
+    const starts = [], weights = [];
+    let damaged = false;
+    for (let i = 0; i < lines.length; i++) {
+      const marker = /^(-{3,})column(?:\[([^\]]*)\])?(-{3,})$/.exec(lines[i]);
+      if (lines[i].startsWith(first[1] + 'column[') && !marker) damaged = true;
+      if (!marker || marker[1] + 'column' + marker[3] !== separator) continue;
+      starts.push(i);
+      const value = metadata(marker[2] || '', 1);
+      weights.push(value?.weights.length === 1 ? value.weights[0] : null);
+    }
+    const columns = starts.map((start, index) => emptyColumn(lines.slice(start + 1, starts[index + 1] ?? lines.length).join('\n')));
+    return { format: 'inline', columns, weights, columnLines: starts, separator,
+      valid: !damaged && columns.length <= WEIGHT_TOTAL && weights.every(weight => weight > 0) && Number.isFinite(weights.reduce((sum, weight) => sum + weight, 0)) };
+  }
   const header = /^widths: ([\deE+.,-]+)$/.exec(lines[0]);
   const data = header && metadata(header[1], 1);
   const separator = /^-{3,}column-{3,}$/.test(lines[1] || '') ? lines[1] : null;
@@ -88,15 +105,43 @@ function plainBody(source) {
   const starts = [];
   for (let i = 1; i < lines.length; i++) if (lines[i] === separator) starts.push(i);
   const columns = starts.map((start, index) => emptyColumn(lines.slice(start + 1, starts[index + 1] ?? lines.length).join('\n')));
-  return { ...data, columns, columnLines: starts, separator, valid: columns.length === data.weights.length };
+  return { ...data, format: 'legacy', columns, columnLines: starts, separator, valid: columns.length === data.weights.length && columns.length <= WEIGHT_TOTAL };
 }
 
 function previewBody(source) {
-  const data = plainBody(source);
-  if (!data.valid && data.weights && data.columns.length && data.columns.length <= WEIGHT_TOTAL) {
-    return { ...data, weights: integerWeights(data.columns.map(() => 1)), valid: true };
+  return plainBody(source);
+}
+
+function weightedSeparator(separator, weight) {
+  return separator.replace('column', 'column[' + weight + ']');
+}
+
+function weightChanges(doc, group, weights = group.weights) {
+  if (!group.valid || weights.length !== group.columns.length) return [];
+  const text = doc.toString();
+  const separator = group.format === 'legacy' ? safeSeparator(group.columns.map(column => column.text), group.separator.indexOf('column')) : group.separator;
+  const changes = [];
+  if (group.format === 'legacy') {
+    const header = doc.line(group.start + 2), marker = doc.line(group.start + 3);
+    changes.push({ from: header.from, to: marker.from, insert: '' });
   }
-  return data;
+  group.columnLines.forEach((line, index) => {
+    const marker = doc.line(group.start + line + 2);
+    const ending = text.slice(marker.from, marker.to).endsWith('\r') ? '\r' : '';
+    const insert = weightedSeparator(separator, weights[index]) + ending;
+    if (text.slice(marker.from, marker.to) !== insert) changes.push({ from: marker.from, to: marker.to, insert });
+  });
+  return changes;
+}
+
+function migrateEditing(transaction) {
+  if (!transaction.docChanged || !['input', 'delete', 'move'].some(event => transaction.isUserEvent(event))) return [];
+  const touched = [];
+  transaction.changes.iterChangedRanges((from, to, fromNew, toNew) => touched.push({ from: fromNew, to: toNew }));
+  const doc = transaction.newDoc;
+  return groups(doc.toString()).filter(group => group.closed && group.valid && group.format === 'legacy' &&
+    touched.some(range => range.from <= doc.line(group.end).to && range.to >= doc.line(group.start + 1).from))
+    .flatMap(group => weightChanges(doc, group));
 }
 
 function sessionActive(session, selection) {
@@ -107,7 +152,6 @@ function editingSessions(sessions, transaction) {
   const finishingExit = transaction.isUserEvent('easy-columns.finish.exit');
   if (['undo', 'redo'].some(event => transaction.isUserEvent(event)) ||
     (transaction.isUserEvent('easy-columns.finish') && !finishingExit)) return [];
-  if (!transaction.docChanged) return finishingExit ? sessions.filter(session => sessionActive(session, transaction.newSelection)) : sessions;
   const before = transaction.startState.doc, after = transaction.newDoc;
   const ranges = [];
   transaction.changes.iterChangedRanges((from, to, fromNew, toNew) => ranges.push({ from, to, fromNew, toNew }));
@@ -116,17 +160,27 @@ function editingSessions(sessions, transaction) {
   const covered = (from, to) => ranges.some(range => range.from <= from && range.to >= to && range.to > range.from);
   const manual = ['input', 'delete', 'move'].some(event => transaction.isUserEvent(event));
   const seed = (group, doc) => {
-    const header = doc.line(group.start + 2);
+    const opening = doc.line(group.start + 1);
     return {
-      start: doc.line(group.start + 1).from, end: doc.line(group.end).to,
-      headerFrom: header.from, headerTo: header.to,
-      baselineCount: group.columns.length, manualWidths: false,
-      markers: group.columnLines.map((line, index) => {
+      start: opening.from, end: doc.line(group.end).to, openingEnd: opening.to,
+      baselineCount: group.columns.length,
+      markers: group.columnLines.map(line => {
         const marker = doc.line(group.start + line + 2);
-        return { from: marker.from, to: marker.to, weight: group.valid ? group.weights[index] : null, partial: false };
+        return { from: marker.from, to: marker.to, partial: false };
       })
     };
   };
+  if (!transaction.docChanged) {
+    if (finishingExit) return sessions.filter(session => sessionActive(session, transaction.newSelection));
+    const pending = [...sessions];
+    if (transaction.startState.selection) for (const group of groups(before.toString())) {
+      if (!group.weights || !group.columns.length) continue;
+      const session = seed(group, before);
+      if (!pending.some(item => item.start === session.start) &&
+        (sessionActive(session, transaction.startState.selection) || sessionActive(session, transaction.newSelection))) pending.push(session);
+    }
+    return pending;
+  }
   const pending = [...sessions];
   if (manual) {
     for (const group of groups(before.toString())) {
@@ -137,15 +191,14 @@ function editingSessions(sessions, transaction) {
   }
   const mapped = pending.filter(session => {
     if (!manual && touched(session.start, session.end)) return false;
-    return !covered(session.start, session.headerFrom - 1);
+    return !covered(session.start, session.openingEnd);
   }).map(session => ({
     ...session,
     start: transaction.changes.mapPos(session.start, 1), end: transaction.changes.mapPos(session.end, -1),
-    headerFrom: transaction.changes.mapPos(session.headerFrom, 1), headerTo: transaction.changes.mapPos(session.headerTo, -1),
-    manualWidths: session.manualWidths || touched(session.headerFrom, session.headerTo),
+    openingEnd: transaction.changes.mapPos(session.openingEnd, -1),
     markers: session.markers.filter(marker => !covered(marker.from, marker.to)).map(marker => ({
       ...marker, partial: marker.partial || touched(marker.from, marker.to),
-      from: transaction.changes.mapPos(marker.from, marker.partial ? -1 : 1), to: transaction.changes.mapPos(marker.to, -1)
+      from: transaction.changes.mapPos(marker.from, marker.partial || touched(marker.from, marker.to) ? -1 : 1), to: transaction.changes.mapPos(marker.to, -1)
     }))
   }));
   for (const group of groups(after.toString())) {
@@ -169,7 +222,7 @@ function finishEditing(doc, sessions, selection = null) {
   const text = doc.toString();
   const changes = [];
   for (const group of groups(text)) {
-    if (!group.closed || !group.weights || !group.columns.length || group.columns.length > WEIGHT_TOTAL) continue;
+    if (!group.closed || !group.valid || !group.weights || !group.columns.length || group.columns.length > WEIGHT_TOTAL) continue;
     const first = doc.line(group.start + 1);
     const session = pending.find(item => item.start === first.from);
     if (!session) continue;
@@ -177,7 +230,7 @@ function finishEditing(doc, sessions, selection = null) {
     const current = new Set(starts);
     if (session.markers.some(marker => !current.has(marker.from))) continue;
     if (group.columns.length === 1) {
-      const bodyStart = doc.line(group.start + 4).from, closing = doc.line(group.end);
+      const bodyStart = doc.line(group.start + group.columnLines[0] + 3).from, closing = doc.line(group.end);
       if (bodyStart === closing.from) changes.push({ from: first.from, to: closing.to, insert: '' });
       else {
         changes.push({ from: first.from, to: bodyStart, insert: '' });
@@ -185,27 +238,32 @@ function finishEditing(doc, sessions, selection = null) {
       }
       continue;
     }
-    if (session.manualWidths && group.valid) continue;
-    const byPosition = new Map(session.markers.map(marker => [marker.from, marker.weight]));
-    const remaining = starts.map(from => byPosition.get(from));
-    const added = remaining.some(weight => !(weight > 0));
-    if (!added && group.valid && group.columns.length === session.baselineCount) continue;
-    const weights = integerWeights(added ? group.columns.map(() => 1) : remaining);
-    const header = doc.line(group.start + 2), insert = 'widths: ' + weights.join(',');
-    if (text.slice(header.from, header.to) !== insert) changes.push({ from: header.from, to: header.to, insert });
+    if (group.format === 'inline') {
+      if (group.columns.length !== session.baselineCount) changes.push(...weightChanges(doc, group, integerWeights(group.weights)));
+      continue;
+    }
+    changes.push(...weightChanges(doc, group));
   }
   return changes;
 }
 
+function safeSeparator(texts, minimum = 3) {
+  let size = minimum;
+  while (texts.some(text => text.split('\n').some(line => {
+    const marker = /^(-{3,})column(?:\[[^\]]*\])?(-{3,})$/.exec(line);
+    return (marker && marker[1].length === size && marker[2].length === size) || line.startsWith('-'.repeat(size) + 'column[');
+  }))) size++;
+  return '-'.repeat(size) + 'column' + '-'.repeat(size);
+}
+
 function serializePlain(group) {
   const texts = group.columns.map(c => c.text);
-  let size = 3;
-  while (texts.some(text => text.split('\n').includes('-'.repeat(size) + 'column' + '-'.repeat(size)))) size++;
-  const separator = '-'.repeat(size) + 'column' + '-'.repeat(size);
+  const separator = safeSeparator(texts);
   const runs = texts.flatMap(text => [...text.matchAll(/`+/g)].map(m => m[0].length));
   const fence = '`'.repeat(runs.reduce((length, n) => Math.max(length, n + 1), 4));
-  const lines = [fence + 'easy-columns', 'widths: ' + integerWeights(group.weights).join(',')];
-  for (const text of texts) lines.push(separator, ...text.split('\n'));
+  const weights = integerWeights(group.weights);
+  const lines = [fence + 'easy-columns'];
+  for (const [index, text] of texts.entries()) lines.push(weightedSeparator(separator, weights[index]), ...text.split('\n'));
   lines.push(fence);
   return lines.join(group.newline || '\n');
 }
@@ -368,4 +426,4 @@ function selectedBlock(text, from, to) {
   return { from, to, source, before, after };
 }
 
-module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody, previewBody, sessionActive, editingSessions, finishEditing };
+module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody, previewBody, sessionActive, editingSessions, finishEditing, weightChanges, migrateEditing };

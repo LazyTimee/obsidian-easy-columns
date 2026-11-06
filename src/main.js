@@ -227,6 +227,8 @@ class EasyColumns extends Plugin {
 
   finishExitedColumns(transaction) {
     if (['undo', 'redo', 'easy-columns.finish'].some(event => transaction.isUserEvent(event))) return transaction;
+    const migration = model.migrateEditing(transaction);
+    if (migration.length) return [transaction, { changes: migration, sequential: true }];
     const sessions = transaction.startState.field(this.columnEditingField, false) || [];
     if (!sessions.length && !transaction.docChanged) return transaction;
     const pending = this.pendingColumnEdits(sessions, transaction);
@@ -272,11 +274,26 @@ class EasyColumns extends Plugin {
   }
 
   focusColumn(editor, group, index) {
-    let line = group.start + 3;
-    for (let i = 0; i < index; i++) line += group.columns[i].text.split('\n').length + 1;
+    let line = group.start + group.columnLines[index] + 2;
     const lines = group.columns[index].text.split('\n');
     line += lines.length - 1;
+    if (group.format === 'legacy' && group.valid && editor.getValue) {
+      const text = editor.getValue();
+      const doc = this.editorDocument(text);
+      const changes = model.weightChanges(doc, group).map(change => ({ from: editor.offsetToPos(change.from), to: editor.offsetToPos(change.to), text: change.insert }));
+      if (changes.length) {
+        editor.transaction({ changes, selection: { from: { line: line - 1, ch: lines[lines.length - 1].length } } }, 'easy-columns');
+        editor.focus(); return;
+      }
+    }
     editor.setCursor({ line, ch: lines[lines.length - 1].length }); editor.focus();
+  }
+
+  editorDocument(text) {
+    const lines = text.split('\n'), starts = [];
+    let offset = 0;
+    for (const line of lines) { starts.push(offset); offset += line.length + 1; }
+    return { toString: () => text, line: number => ({ from: starts[number - 1], to: starts[number - 1] + lines[number - 1].length }) };
   }
 
   async renderPlain(source, el, context) {
@@ -551,7 +568,7 @@ class EasyColumns extends Plugin {
     return { view, file: view.file, group: matches[0], document };
   }
 
-  commit(snapshot, next, headerOnly = false) {
+  commit(snapshot, next, weightsOnly = false) {
     if (next.columns.length > model.WEIGHT_TOTAL) {
       new Notice(this.t('limit')); return false;
     }
@@ -562,14 +579,23 @@ class EasyColumns extends Plugin {
     if ((snapshot.document !== undefined && snapshot.document !== document) || !current?.valid || current.source !== group.source) {
       new Notice(this.t('changed')); return false;
     }
-    const text = model.serialize(next);
     const editor = view.editor;
-    const first = current.start + (headerOnly ? 1 : 0);
-    const last = headerOnly ? first : current.end - 1;
-    const replacement = headerOnly ? 'widths: ' + model.integerWeights(next.weights).join(',') : text;
     this.closeMenu(); this.hideTip();
-    const ending = editor.getLine(last).endsWith('\r') ? '\r' : '';
-    editor.transaction({ changes: [{ from: { line: first, ch: 0 }, to: { line: last, ch: editor.getLine(last).length }, text: replacement + ending }] }, 'easy-columns');
+    if (weightsOnly) {
+      const lines = document.split('\n');
+      const position = offset => {
+        let line = 0;
+        while (line < lines.length - 1 && offset > lines[line].length) { offset -= lines[line].length + 1; line++; }
+        return { line, ch: offset };
+      };
+      const changes = model.weightChanges(this.editorDocument(document), current, model.integerWeights(next.weights))
+        .map(change => ({ from: position(change.from), to: position(change.to), text: change.insert }));
+      if (changes.length) editor.transaction({ changes }, 'easy-columns');
+    } else {
+      const last = current.end - 1;
+      const ending = editor.getLine(last).endsWith('\r') ? '\r' : '';
+      editor.transaction({ changes: [{ from: { line: current.start, ch: 0 }, to: { line: last, ch: editor.getLine(last).length }, text: model.serialize(next) + ending }] }, 'easy-columns');
+    }
     editor.focus();
     this.schedule();
     return true;
@@ -600,6 +626,8 @@ class EasyColumns extends Plugin {
       group = context.snapshot.group;
     }
     if (group) {
+      const plan = !context && this.columnInsertionPlan(editor, group);
+      if (plan) menu.addItem(item => item.setTitle(this.t('add')).setIcon('columns').onClick(() => this.insertColumn(editor, plan)));
       if (group.valid) menu.addItem(item => item.setTitle(this.t('equalize')).setIcon('columns').onClick(() => {
         const view = this.app.workspace.getLeavesOfType('markdown').map(l => l.view).find(v => v.editor === editor);
         if (view) this.action({ view, file: view.file, group, document: text }, 'equal');
@@ -608,6 +636,43 @@ class EasyColumns extends Plugin {
     }
     const plan = this.creationPlan(editor);
     if (plan) menu.addItem(item => item.setTitle(this.t('add')).setIcon('columns').onClick(() => this.createColumns(editor, plan)));
+  }
+
+  columnInsertionPlan(editor, group) {
+    if (!group.closed || !group.valid || !group.weights || !group.columns.length ||
+      group.columns.length >= model.WEIGHT_TOTAL || editor.listSelections().length !== 1) return null;
+    const from = editor.getCursor('from'), to = editor.getCursor('to');
+    if (from.line !== to.line || from.ch !== to.ch) return null;
+    const point = { line: from.line, ch: from.ch };
+    if (point.line <= group.start + group.columnLines[0] + 1 || point.line >= group.end - 1 ||
+      group.columnLines.some(line => point.line === group.start + line + 1)) return null;
+    const view = this.app.workspace.getLeavesOfType('markdown').map(l => l.view).find(v => v.editor === editor);
+    if (!view || view.getMode() !== 'source') return null;
+    return { text: editor.getValue(), view, file: view.file, point, group };
+  }
+
+  insertColumn(editor, plan) {
+    if (plan.view.file !== plan.file || plan.view.getMode() !== 'source') return false;
+    if (editor.getValue() !== plan.text) {
+      new Notice(this.t('changed')); return false;
+    }
+    const group = plan.group;
+    const index = group.columnLines.findLastIndex(line => group.start + line + 1 < plan.point.line);
+    const column = group.columns[index].text;
+    const row = plan.point.line - (group.start + group.columnLines[index] + 2);
+    const split = column.split('\n').slice(0, row).reduce((sum, line) => sum + line.length + 1, 0) + plan.point.ch;
+    const columns = [...group.columns];
+    columns.splice(index, 1, model.emptyColumn(column.slice(0, split)), model.emptyColumn(column.slice(split)));
+    const replacement = model.serialize({ ...group, columns, weights: columns.map(() => 1) });
+    const parsed = model.groups(replacement)[0];
+    const last = group.end - 1;
+    const ending = plan.text.split('\n')[last].endsWith('\r') ? '\r' : '';
+    editor.transaction({
+      changes: [{ from: { line: group.start, ch: 0 }, to: { line: last, ch: plan.text.split('\n')[last].length }, text: replacement + ending }],
+      selection: { from: { line: group.start + parsed.columnLines[index + 1] + 2, ch: 0 } }
+    }, 'easy-columns');
+    editor.focus();
+    return true;
   }
 
   registerAddColumnCommand() {

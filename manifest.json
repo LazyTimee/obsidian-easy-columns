@@ -1,7 +1,7 @@
 {
   "id": "easy-columns",
   "name": "Easy Columns",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.14.5",
   "description": "Create and manage columns with plain Markdown content.",
   "author": "Merfy",

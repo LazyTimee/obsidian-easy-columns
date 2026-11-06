@@ -45,7 +45,7 @@ The content moves into the left column, and an empty column appears on the right
 
 After adding a column, all widths in the group become equal. Deleting columns preserves the remaining proportions; when only one column remains, its content returns to ordinary note text.
 
-When editing the Markdown source, you can add or remove column separators and content without updating `widths:` by hand. Widths are synchronized when you leave the block or editor, switch to Reading view, or open another note. A temporary single column keeps its wrapper while you edit; it becomes ordinary Markdown when editing ends. Preview uses temporary equal widths if the counts do not yet match.
+When editing the Markdown source, choose **Add column** from the context menu to split the text at the cursor into a new column. All column widths become equal immediately. Each column stores its width in its separator, such as `---column[1050]---`. Existing groups with `widths:` are converted on first edit, preserving their specified widths. A missing or invalid width leaves the block displayed as Markdown source. Separators are checked when you leave the block or editor, switch to Reading view, or open another note; manually changing the column count normalizes the specified weights. A temporary single column keeps its wrapper until editing ends.
 
 Reading view hides controls and prevents editing inside columns. Text selection, copying, and links remain available. Task checkboxes are changed through the Markdown source.
 
