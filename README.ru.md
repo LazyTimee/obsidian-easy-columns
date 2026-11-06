@@ -69,3 +69,9 @@ npm run build
 ```
 
 Альтернативная команда — `node scripts/build.cjs`. Три установочных файла появятся в `dist/easy-columns/`.
+
+## Лицензия
+
+Copyright (c) 2026 Merfy.
+
+Плагин распространяется под GNU General Public License только версии 3 (GPL-3.0-only). Полный текст — в [LICENSE](LICENSE).

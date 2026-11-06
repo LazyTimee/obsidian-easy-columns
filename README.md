@@ -69,3 +69,9 @@ npm run build
 ```
 
 Alternatively, run `node scripts/build.cjs`. The three installation files are written to `dist/easy-columns/`.
+
+## License
+
+Copyright (c) 2026 Merfy.
+
+Licensed under the GNU General Public License version 3 only (GPL-3.0-only). See [LICENSE](LICENSE).
