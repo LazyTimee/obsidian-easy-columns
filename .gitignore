@@ -2,23 +2,6 @@
 node_modules/
 /dist/
 
-# Local tests and development documents
-/tests/
-AGENTS.md
-REQUIREMENTS.md
-VALIDATION.md
-HANDOFF.md
-
-# Codex materials, prototypes and backups
-.codex/
-.agents/
-.rollback/
-prototype/
-prototypes/
-*.bak
-*.backup
-*~
-
 # Logs and temporary files
 *.log
 logs/
