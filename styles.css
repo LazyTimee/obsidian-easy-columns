@@ -1,0 +1,143 @@
+.ec-plain-group, .ec-column {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+.ec-plain-group {
+  margin: var(--p-spacing, 1em) 0;
+}
+.ec-plain-group > .ec-group-content {
+  display: grid !important;
+  grid-template-columns: var(--ec-columns);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  position: relative;
+  overflow: visible;
+  white-space: normal;
+}
+.ec-group-content > .ec-column {
+  min-width: 0 !important;
+  min-height: 1.5em !important;
+  min-height: 1lh !important;
+  width: auto !important;
+  margin: 0 !important;
+}
+.ec-plain-group > .ec-group-content.ec-stacked {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+}
+.ec-column > .ec-column-content {
+  min-height: 1.5em !important;
+  min-height: 1lh !important;
+  overflow-wrap: anywhere;
+}
+.ec-column > .ec-column-content > :first-child { margin-top: 0; }
+.ec-column > .ec-column-content > :last-child { margin-bottom: 0; }
+.ec-column img:not([width]) { max-width: 100%; height: auto; }
+.ec-column p:has(> .image-embed:only-child) { line-height: 0; }
+.ec-column .image-embed img { display: block; }
+.ec-controls { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+.ec-controls [hidden] { display: none !important; }
+.ec-line {
+  position: fixed;
+  width: 12px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background: linear-gradient(to right, transparent 5px, var(--text-muted) 5px, var(--text-muted) 6px, transparent 6px);
+}
+.ec-line:hover, .ec-line:active { opacity: 1; }
+.ec-line.ec-inner { cursor: col-resize; }
+.ec-edge {
+  position: fixed;
+  width: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.ec-edge button {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ec-edge button:hover, .ec-edge:focus-within button {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ec-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-s);
+  pointer-events: auto;
+  z-index: 2;
+}
+.ec-menu button, .ec-edge button {
+  width: 28px; height: 28px; min-width: 28px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1; box-shadow: none;
+}
+.ec-menu button svg, .ec-edge button svg {
+  display: block; width: 18px; height: 18px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; pointer-events: none;
+}
+.ec-delete-row { position: relative; display: flex; }
+.ec-delete-choices { position: absolute; inset: 0; pointer-events: none; }
+.ec-delete-choices button { position: absolute; top: 0; pointer-events: auto; }
+.ec-delete-choices .ec-remove-left { right: 32px; }
+.ec-delete-choices .ec-remove-right { left: 32px; }
+.ec-menu button.ec-confirm { background: #b42332; color: white; }
+.ec-tip {
+  max-width: calc(100vw - 8px); white-space: pre;
+  box-sizing: border-box; width: max-content; transform: none;
+}
+.ec-tip .tooltip-arrow {
+  left: var(--ec-tip-arrow-left, 50%);
+}
+body.ec-dragging, body.ec-dragging * { cursor: col-resize !important; user-select: none !important; }
+.block-language-easy-columns { background: transparent; padding: 0; }
+.ec-plain-group { cursor: text; }
+.ec-plain-group > .ec-group-content > .ec-column { align-self: stretch; }
+.markdown-source-view.is-live-preview .ec-empty-column > .ec-column-content::before {
+  content: attr(data-ec-empty-label);
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text-faint);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.ec-language-switch {
+  display: inline-flex; gap: 2px; padding: 3px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px; background: var(--background-secondary);
+}
+.ec-language-switch button {
+  border: 0; border-radius: 999px; box-shadow: none;
+  background: transparent; color: var(--text-muted);
+  padding: 6px 14px; height: auto; min-height: 30px;
+}
+.ec-language-switch button[aria-pressed="true"] {
+  background: var(--interactive-accent); color: var(--text-on-accent);
+}
+.ec-language-switch button:focus-visible {
+  outline: 2px solid var(--interactive-accent); outline-offset: 2px;
+}

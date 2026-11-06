@@ -1,0 +1,9 @@
+{
+  "id": "easy-columns",
+  "name": "Easy Columns",
+  "version": "0.6.4",
+  "minAppVersion": "1.1.0",
+  "description": "Create and manage columns with plain Markdown content.",
+  "author": "Easy Columns",
+  "isDesktopOnly": false
+}
