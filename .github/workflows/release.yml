@@ -1,0 +1,46 @@
+name: Build and attest release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node -e "if (require('./manifest.json').version !== process.env.RELEASE_TAG) throw new Error('Release tag must match manifest.json version')"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: node --check dist/easy-columns/main.js
+      - name: Attest installation files
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/easy-columns/main.js
+            dist/easy-columns/manifest.json
+            dist/easy-columns/styles.css
+      - name: Upload installation files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/easy-columns/main.js dist/easy-columns/manifest.json dist/easy-columns/styles.css --clobber

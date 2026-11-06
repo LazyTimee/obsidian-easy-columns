@@ -1,15 +1,15 @@
-.ec-plain-group, .ec-column {
-  background: transparent !important;
-  border: 0 !important;
-  padding: 0 !important;
-  box-shadow: none !important;
+body .ec-plain-group, body .ec-plain-group > .ec-group-content > .ec-column {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
   overflow: visible;
 }
 .ec-plain-group {
   margin: var(--p-spacing, 1em) 0;
 }
-.ec-plain-group > .ec-group-content {
-  display: grid !important;
+body .ec-plain-group > .ec-group-content {
+  display: grid;
   grid-template-columns: var(--ec-columns);
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
@@ -19,29 +19,27 @@
   overflow: visible;
   white-space: normal;
 }
-.ec-group-content > .ec-column {
-  min-width: 0 !important;
-  min-height: 1.5em !important;
-  min-height: 1lh !important;
-  width: auto !important;
-  margin: 0 !important;
+body .ec-plain-group > .ec-group-content > .ec-column {
+  min-width: 0;
+  min-height: 1lh;
+  width: auto;
+  margin: 0;
 }
 .ec-plain-group > .ec-group-content.ec-stacked {
   grid-template-columns: minmax(0, 1fr);
   grid-auto-flow: row;
 }
-.ec-column > .ec-column-content {
-  min-height: 1.5em !important;
-  min-height: 1lh !important;
+body .ec-plain-group > .ec-group-content > .ec-column > .ec-column-content {
+  min-height: 1lh;
   overflow-wrap: anywhere;
 }
 .ec-column > .ec-column-content > :first-child { margin-top: 0; }
 .ec-column > .ec-column-content > :last-child { margin-bottom: 0; }
 .ec-column img:not([width]) { max-width: 100%; height: auto; }
-.ec-column p:has(> .image-embed:only-child) { line-height: 0; }
+.ec-column p > .image-embed:only-child { display: block; line-height: 0; }
 .ec-column .image-embed img { display: block; }
 .ec-controls { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
-.ec-controls [hidden] { display: none !important; }
+body .ec-controls [hidden] { display: none; }
 .ec-line {
   position: fixed;
   width: 12px;
@@ -111,7 +109,9 @@
 .ec-tip .tooltip-arrow {
   left: var(--ec-tip-arrow-left, 50%);
 }
-body.ec-dragging, body.ec-dragging * { cursor: col-resize !important; user-select: none !important; }
+html > body.ec-dragging,
+html > body.ec-dragging *,
+html > body.ec-dragging .ec-controls * { cursor: col-resize; user-select: none; }
 .block-language-easy-columns { background: transparent; padding: 0; }
 .ec-plain-group { cursor: text; }
 .ec-plain-group > .ec-group-content > .ec-column { align-self: stretch; }

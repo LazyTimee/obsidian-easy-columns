@@ -45,6 +45,8 @@ The content moves into the left column, and an empty column appears on the right
 
 After adding a column, all widths in the group become equal. Deleting columns preserves the remaining proportions; when only one column remains, its content returns to ordinary note text.
 
+When editing the Markdown source, you can add or remove column separators and content without updating `widths:` by hand. Widths are synchronized when you leave the block or editor, switch to Reading view, or open another note. A temporary single column keeps its wrapper while you edit; it becomes ordinary Markdown when editing ends. Preview uses temporary equal widths if the counts do not yet match.
+
 Reading view hides controls and prevents editing inside columns. Text selection, copying, and links remain available. Task checkboxes are changed through the Markdown source.
 
 ## Settings
@@ -69,6 +71,8 @@ npm run build
 ```
 
 Alternatively, run `node scripts/build.cjs`. The three installation files are written to `dist/easy-columns/`.
+
+For releases containing `.github/workflows/release.yml`, publishing a GitHub release builds its tag, generates artifact attestations, and uploads the three installation files. The tag must exactly match the version in `manifest.json`.
 
 ## License
 

@@ -31,11 +31,11 @@ function resizeWeights(weights, index, fraction, minimumFraction) {
   return next;
 }
 
-function metadata(value) {
+function metadata(value, minimum = 2) {
   const m = /^([\deE+.,-]+)$/.exec(value);
   if (!m) return null;
   const weights = m[1].split(',').map(Number);
-  if (weights.length < 2 || weights.some(w => !Number.isFinite(w) || w <= 0) || !Number.isFinite(weights.reduce((a, b) => a + b, 0))) return null;
+  if (weights.length < minimum || weights.some(w => !Number.isFinite(w) || w <= 0) || !Number.isFinite(weights.reduce((a, b) => a + b, 0))) return null;
   return { weights };
 }
 
@@ -56,7 +56,7 @@ function groups(text) {
       const end = close < lines.length ? close + 1 : lines.length;
       found.push({ ...data, start, end, source: lines.slice(start, end).join('\n'),
         newline: lines[start].endsWith('\r') ? '\r\n' : '\n',
-        valid: close < lines.length && data.valid });
+        closed: close < lines.length, valid: close < lines.length && data.valid });
       start = end - 1;
       continue;
     }
@@ -82,13 +82,119 @@ function serialize(group) {
 function plainBody(source) {
   const lines = source.replace(/\r\n/g, '\n').split('\n');
   const header = /^widths: ([\deE+.,-]+)$/.exec(lines[0]);
-  const data = header && metadata(header[1]);
+  const data = header && metadata(header[1], 1);
   const separator = /^-{3,}column-{3,}$/.test(lines[1] || '') ? lines[1] : null;
   if (!data || !separator) return { valid: false, columns: [] };
   const starts = [];
   for (let i = 1; i < lines.length; i++) if (lines[i] === separator) starts.push(i);
   const columns = starts.map((start, index) => emptyColumn(lines.slice(start + 1, starts[index + 1] ?? lines.length).join('\n')));
-  return { ...data, columns, separator, valid: columns.length === data.weights.length };
+  return { ...data, columns, columnLines: starts, separator, valid: columns.length === data.weights.length };
+}
+
+function previewBody(source) {
+  const data = plainBody(source);
+  if (!data.valid && data.weights && data.columns.length && data.columns.length <= WEIGHT_TOTAL) {
+    return { ...data, weights: integerWeights(data.columns.map(() => 1)), valid: true };
+  }
+  return data;
+}
+
+function sessionActive(session, selection) {
+  return selection.ranges.some(range => range.from <= session.end && range.to >= session.start);
+}
+
+function editingSessions(sessions, transaction) {
+  const finishingExit = transaction.isUserEvent('easy-columns.finish.exit');
+  if (['undo', 'redo'].some(event => transaction.isUserEvent(event)) ||
+    (transaction.isUserEvent('easy-columns.finish') && !finishingExit)) return [];
+  if (!transaction.docChanged) return finishingExit ? sessions.filter(session => sessionActive(session, transaction.newSelection)) : sessions;
+  const before = transaction.startState.doc, after = transaction.newDoc;
+  const ranges = [];
+  transaction.changes.iterChangedRanges((from, to, fromNew, toNew) => ranges.push({ from, to, fromNew, toNew }));
+  const touched = (from, to) => ranges.some(range => range.from === range.to
+    ? range.from >= from && range.from <= to : range.from < to && range.to > from);
+  const covered = (from, to) => ranges.some(range => range.from <= from && range.to >= to && range.to > range.from);
+  const manual = ['input', 'delete', 'move'].some(event => transaction.isUserEvent(event));
+  const seed = (group, doc) => {
+    const header = doc.line(group.start + 2);
+    return {
+      start: doc.line(group.start + 1).from, end: doc.line(group.end).to,
+      headerFrom: header.from, headerTo: header.to,
+      baselineCount: group.columns.length, manualWidths: false,
+      markers: group.columnLines.map((line, index) => {
+        const marker = doc.line(group.start + line + 2);
+        return { from: marker.from, to: marker.to, weight: group.valid ? group.weights[index] : null, partial: false };
+      })
+    };
+  };
+  const pending = [...sessions];
+  if (manual) {
+    for (const group of groups(before.toString())) {
+      if (!group.weights || !group.columns.length) continue;
+      const start = before.line(group.start + 1).from;
+      if (!pending.some(session => session.start === start) && touched(start, before.line(group.end).to)) pending.push(seed(group, before));
+    }
+  }
+  const mapped = pending.filter(session => {
+    if (!manual && touched(session.start, session.end)) return false;
+    return !covered(session.start, session.headerFrom - 1);
+  }).map(session => ({
+    ...session,
+    start: transaction.changes.mapPos(session.start, 1), end: transaction.changes.mapPos(session.end, -1),
+    headerFrom: transaction.changes.mapPos(session.headerFrom, 1), headerTo: transaction.changes.mapPos(session.headerTo, -1),
+    manualWidths: session.manualWidths || touched(session.headerFrom, session.headerTo),
+    markers: session.markers.filter(marker => !covered(marker.from, marker.to)).map(marker => ({
+      ...marker, partial: marker.partial || touched(marker.from, marker.to),
+      from: transaction.changes.mapPos(marker.from, marker.partial ? -1 : 1), to: transaction.changes.mapPos(marker.to, -1)
+    }))
+  }));
+  for (const group of groups(after.toString())) {
+    if (!group.weights || !group.columns.length) continue;
+    const start = after.line(group.start + 1).from, end = after.line(group.end).to;
+    const existing = mapped.find(session => session.start === start);
+    if (existing) {
+      existing.end = end;
+      const starts = new Set(group.columnLines.map(line => after.line(group.start + line + 2).from));
+      existing.markers.forEach(marker => { if (starts.has(marker.from)) marker.partial = false; });
+    }
+    else if (manual && ranges.some(range => range.fromNew < end &&
+      (range.toNew > start || (range.fromNew === range.toNew && range.fromNew > start)))) mapped.push(seed(group, after));
+  }
+  return finishingExit ? mapped.filter(session => sessionActive(session, transaction.newSelection)) : mapped;
+}
+
+function finishEditing(doc, sessions, selection = null) {
+  const pending = selection ? sessions.filter(session => !sessionActive(session, selection)) : sessions;
+  if (!pending.length) return [];
+  const text = doc.toString();
+  const changes = [];
+  for (const group of groups(text)) {
+    if (!group.closed || !group.weights || !group.columns.length || group.columns.length > WEIGHT_TOTAL) continue;
+    const first = doc.line(group.start + 1);
+    const session = pending.find(item => item.start === first.from);
+    if (!session) continue;
+    const starts = group.columnLines.map(line => doc.line(group.start + line + 2).from);
+    const current = new Set(starts);
+    if (session.markers.some(marker => !current.has(marker.from))) continue;
+    if (group.columns.length === 1) {
+      const bodyStart = doc.line(group.start + 4).from, closing = doc.line(group.end);
+      if (bodyStart === closing.from) changes.push({ from: first.from, to: closing.to, insert: '' });
+      else {
+        changes.push({ from: first.from, to: bodyStart, insert: '' });
+        changes.push({ from: closing.from - 1, to: closing.to, insert: '' });
+      }
+      continue;
+    }
+    if (session.manualWidths && group.valid) continue;
+    const byPosition = new Map(session.markers.map(marker => [marker.from, marker.weight]));
+    const remaining = starts.map(from => byPosition.get(from));
+    const added = remaining.some(weight => !(weight > 0));
+    if (!added && group.valid && group.columns.length === session.baselineCount) continue;
+    const weights = integerWeights(added ? group.columns.map(() => 1) : remaining);
+    const header = doc.line(group.start + 2), insert = 'widths: ' + weights.join(',');
+    if (text.slice(header.from, header.to) !== insert) changes.push({ from: header.from, to: header.to, insert });
+  }
+  return changes;
 }
 
 function serializePlain(group) {
@@ -262,4 +368,4 @@ function selectedBlock(text, from, to) {
   return { from, to, source, before, after };
 }
 
-module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody };
+module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody, previewBody, sessionActive, editingSessions, finishEditing };

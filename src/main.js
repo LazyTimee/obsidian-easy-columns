@@ -1,4 +1,4 @@
-const { Plugin, PluginSettingTab, Setting, MarkdownView, Notice, MarkdownRenderer, MarkdownRenderChild } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, MarkdownView, Notice, MarkdownRenderer, MarkdownRenderChild, editorInfoField } = require('obsidian');
 const model = require('./model.cjs');
 const GROUP = '.ec-plain-group';
 const CELL = ':scope > .ec-column';
@@ -148,6 +148,11 @@ class EasyColumns extends Plugin {
     this.registerMarkdownPostProcessor((el, context) => this.discover(el, context));
     this.registerMarkdownCodeBlockProcessor('easy-columns', (source, el, context) => this.renderPlain(source, el, context));
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => this.editorMenu(menu, editor, info)));
+    const registerEditing = () => { this.registerColumnEditing(); this.finishInactiveEditors(); };
+    this.registerEvent(this.app.workspace.on('layout-change', registerEditing));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', registerEditing));
+    this.registerEvent(this.app.workspace.on('file-open', registerEditing));
+    this.app.workspace.onLayoutReady(registerEditing);
     this.registerEvent(this.app.workspace.on('layout-change', () => { this.closeMenu(); this.schedule(); }));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => { this.cancelDrag?.(); this.closeMenu(); this.schedule(); }));
     this.registerEvent(this.app.workspace.on('file-open', () => { this.cancelDrag?.(); this.closeMenu(); this.prune(); this.schedule(); }));
@@ -177,6 +182,7 @@ class EasyColumns extends Plugin {
     this.registerDomEvent(window, 'blur', () => { this.cancelDrag?.(); this.closeMenu(); this.hideTip(); this.leaveLineArea(); });
     this.discover(this.app.workspace.containerEl);
     this.register(() => {
+      this.columnEditingStopped = true;
       this.cancelDrag?.(); this.closeMenu(); this.hideTip();
       for (const line of this.lineHovers?.keys() || []) this.clearLineHover(line);
       this.observer.disconnect(); this.resize.disconnect(); this.intersection.disconnect();
@@ -191,6 +197,80 @@ class EasyColumns extends Plugin {
     });
   }
 
+  registerColumnEditing() {
+    if (this.columnEditingField) return;
+    const Field = editorInfoField?.constructor;
+    if (typeof Field?.define !== 'function') return;
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      // Use the CodeMirror instance supplied by Obsidian, without bundling a library.
+      const cm = leaf.view.editor?.cm;
+      const facet = cm?.state?.constructor?.transactionFilter;
+      const View = cm?.constructor;
+      if (typeof facet?.of !== 'function' || typeof View?.domEventObservers !== 'function' || typeof View?.updateListener?.of !== 'function') continue;
+      this.columnEditingField = Field.define({
+        create: () => [],
+        update: (sessions, transaction) => this.pendingColumnEdits(sessions, transaction)
+      });
+      this.registerEditorExtension([
+        this.columnEditingField,
+        facet.of(transaction => this.finishExitedColumns(transaction)),
+        View.domEventObservers({ blur: (_event, view) => this.finishColumnEditing(view) }),
+        View.updateListener.of(update => {
+          if (!update.transactions.some(transaction => ['undo', 'redo', 'easy-columns.finish'].some(event => transaction.isUserEvent(event)))) {
+            this.scheduleColumnFinish(update.view);
+          }
+        })
+      ]);
+      break;
+    }
+  }
+
+  finishExitedColumns(transaction) {
+    if (['undo', 'redo', 'easy-columns.finish'].some(event => transaction.isUserEvent(event))) return transaction;
+    const sessions = transaction.startState.field(this.columnEditingField, false) || [];
+    if (!sessions.length && !transaction.docChanged) return transaction;
+    const pending = this.pendingColumnEdits(sessions, transaction);
+    const changes = model.finishEditing(transaction.newDoc, pending, transaction.newSelection);
+    return changes.length ? [transaction, { changes, sequential: true }] : transaction;
+  }
+
+  pendingColumnEdits(sessions, transaction) {
+    this.columnEditingCache ||= new WeakMap();
+    if (!this.columnEditingCache.has(transaction)) this.columnEditingCache.set(transaction, model.editingSessions(sessions, transaction));
+    return this.columnEditingCache.get(transaction);
+  }
+
+  finishColumnEditing(cm, force = true) {
+    if (!this.columnEditingField || !cm?.state || cm.composing) return;
+    const sessions = cm.state.field(this.columnEditingField, false);
+    if (!sessions?.length) return;
+    const selection = force ? null : cm.state.selection;
+    if (selection && sessions.every(session => model.sessionActive(session, selection))) return;
+    const changes = model.finishEditing(cm.state.doc, sessions, selection);
+    cm.dispatch({ changes, userEvent: force ? 'easy-columns.finish' : 'easy-columns.finish.exit' });
+  }
+
+  scheduleColumnFinish(cm) {
+    const sessions = cm.state.field(this.columnEditingField, false);
+    if (!sessions?.length || (cm.hasFocus && sessions.every(session => model.sessionActive(session, cm.state.selection)))) return;
+    this.columnFinishQueued ||= new WeakSet();
+    if (this.columnFinishQueued.has(cm)) return;
+    this.columnFinishQueued.add(cm);
+    queueMicrotask(() => {
+      this.columnFinishQueued.delete(cm);
+      if (this.columnEditingStopped || cm.dom?.isConnected === false) return;
+      this.finishColumnEditing(cm, !cm.hasFocus);
+    });
+  }
+
+  finishInactiveEditors() {
+    if (!this.columnEditingField) return;
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const cm = leaf.view.editor?.cm;
+      if (cm && (!cm.hasFocus || leaf.view.getMode() !== 'source')) this.finishColumnEditing(cm);
+    }
+  }
+
   focusColumn(editor, group, index) {
     let line = group.start + 3;
     for (let i = 0; i < index; i++) line += group.columns[i].text.split('\n').length + 1;
@@ -200,11 +280,20 @@ class EasyColumns extends Plugin {
   }
 
   async renderPlain(source, el, context) {
-    const data = model.plainBody(source.replace(/\r?\n$/, ''));
+    const data = model.previewBody(source.replace(/\r?\n$/, ''));
     if (!data.valid) {
       const pre = document.createElement('pre');
       pre.textContent = source;
       el.appendChild(pre);
+      return;
+    }
+    if (data.columns.length === 1) {
+      const body = document.createElement('div');
+      el.appendChild(body);
+      const child = new MarkdownRenderChild(body);
+      context.addChild(child);
+      await MarkdownRenderer.render(this.app, data.columns[0].text, body, context.sourcePath, child);
+      for (const input of body.querySelectorAll('input[type="checkbox"]')) input.disabled = true;
       return;
     }
     const group = document.createElement('div');
