@@ -134,16 +134,6 @@ function weightChanges(doc, group, weights = group.weights) {
   return changes;
 }
 
-function migrateEditing(transaction) {
-  if (!transaction.docChanged || !['input', 'delete', 'move'].some(event => transaction.isUserEvent(event))) return [];
-  const touched = [];
-  transaction.changes.iterChangedRanges((from, to, fromNew, toNew) => touched.push({ from: fromNew, to: toNew }));
-  const doc = transaction.newDoc;
-  return groups(doc.toString()).filter(group => group.closed && group.valid && group.format === 'legacy' &&
-    touched.some(range => range.from <= doc.line(group.end).to && range.to >= doc.line(group.start + 1).from))
-    .flatMap(group => weightChanges(doc, group));
-}
-
 function sessionActive(session, selection) {
   return selection.ranges.some(range => range.from <= session.end && range.to >= session.start);
 }
@@ -172,6 +162,7 @@ function editingSessions(sessions, transaction) {
   };
   if (!transaction.docChanged) {
     if (finishingExit) return sessions.filter(session => sessionActive(session, transaction.newSelection));
+    if (transaction.newSelection.ranges.every(range => sessions.some(session => range.from >= session.start && range.to <= session.end))) return sessions;
     const pending = [...sessions];
     if (transaction.startState.selection) for (const group of groups(before.toString())) {
       if (!group.weights || !group.columns.length) continue;
@@ -182,13 +173,15 @@ function editingSessions(sessions, transaction) {
     return pending;
   }
   const pending = [...sessions];
-  if (manual) {
+  const tracked = () => ranges.every(range => pending.some(session => range.from >= session.start && range.to <= session.end));
+  if (manual && !tracked()) {
     for (const group of groups(before.toString())) {
       if (!group.weights || !group.columns.length) continue;
       const start = before.line(group.start + 1).from;
       if (!pending.some(session => session.start === start) && touched(start, before.line(group.end).to)) pending.push(seed(group, before));
     }
   }
+  const knownEdit = tracked();
   const mapped = pending.filter(session => {
     if (!manual && touched(session.start, session.end)) return false;
     return !covered(session.start, session.openingEnd);
@@ -201,7 +194,8 @@ function editingSessions(sessions, transaction) {
       from: transaction.changes.mapPos(marker.from, marker.partial || touched(marker.from, marker.to) ? -1 : 1), to: transaction.changes.mapPos(marker.to, -1)
     }))
   }));
-  for (const group of groups(after.toString())) {
+  // Inside a tracked block only positions are mapped. Parse content again on exit.
+  if (manual && !knownEdit) for (const group of groups(after.toString())) {
     if (!group.weights || !group.columns.length) continue;
     const start = after.line(group.start + 1).from, end = after.line(group.end).to;
     const existing = mapped.find(session => session.start === start);
@@ -426,4 +420,81 @@ function selectedBlock(text, from, to) {
   return { from, to, source, before, after };
 }
 
-module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody, previewBody, sessionActive, editingSessions, finishEditing, weightChanges, migrateEditing };
+// A searchable source view, with hidden destinations removed and UTF-16 positions retained.
+// Rendering remains Obsidian's job; an unmatched DOM fragment is never guessed.
+function clickSource(text, decodeEntity = value => value) {
+  let visible = '', fence = null;
+  const starts = [], ends = [], images = [];
+  const append = (value, from, to) => {
+    visible += value;
+    for (let n = 0; n < value.length; n++) { starts.push(from); ends.push(to); }
+  };
+  const closing = (from, open, close) => {
+    let depth = 1;
+    for (let i = from + 1; i < text.length; i++) {
+      if (text[i] === '\\') { i++; continue; }
+      if (text[i] === open) depth++;
+      if (text[i] === close && --depth === 0) return i;
+    }
+    return -1;
+  };
+  for (let i = 0; i < text.length;) {
+    if (i === 0 || text[i - 1] === '\n') {
+      const line = text.slice(i).split('\n', 1)[0];
+      const marker = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (marker && (!fence || (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()))) {
+        fence = fence ? null : marker[1]; i += line.length; continue;
+      }
+      if (!fence) {
+        if (/^\s{0,3}\[[^\]]+\]:\s/.test(line)) { i += line.length; continue; }
+        const prefix = /^(?:\s{0,3}>\s?)*(?:\s{0,3}#{1,6}\s+|\s*[-+*]\s+(?:\[[ xX]\]\s+)?|\s*\d+[.)]\s+)?/.exec(line)[0];
+        i += prefix.length;
+        if (!text[i] || text[i] === '\n') { if (text[i]) append(text[i], i, ++i); continue; }
+      }
+    }
+    if (fence) { append(text[i], i, i + 1); i++; continue; }
+    if (text[i] === '`') {
+      const ticks = /^`+/.exec(text.slice(i))[0];
+      const end = text.indexOf(ticks, i + ticks.length);
+      if (end >= 0) {
+        for (let p = i + ticks.length; p < end; p++) append(text[p] === '\n' ? ' ' : text[p], p, p + 1);
+        i = end + ticks.length; continue;
+      }
+    }
+    const image = text.startsWith('![', i), start = image ? i + 1 : i;
+    if (text.startsWith('[[', start)) {
+      const end = text.indexOf(']]', start + 2);
+      if (end >= 0) {
+        if (image) { images.push({ from: i, to: end + 2, at: visible.length }); append('\ufffc', i, end + 2); }
+        else {
+          const pipe = text.indexOf('|', start + 2);
+          const from = pipe >= 0 && pipe < end ? pipe + 1 : start + 2;
+          for (let p = from; p < end; p++) append(text[p], p, p + 1);
+        }
+        i = end + 2; continue;
+      }
+    }
+    if (text[start] === '[') {
+      const labelEnd = closing(start, '[', ']');
+      let end = labelEnd;
+      if (labelEnd >= 0 && text[labelEnd + 1] === '(') end = closing(labelEnd + 1, '(', ')');
+      else if (labelEnd >= 0 && text[labelEnd + 1] === '[') end = closing(labelEnd + 1, '[', ']');
+      if (labelEnd >= 0 && end > labelEnd) {
+        if (image) { images.push({ from: i, to: end + 1, at: visible.length }); append('\ufffc', i, end + 1); }
+        else for (let p = start + 1; p < labelEnd; p++) append(text[p], p, p + 1);
+        i = end + 1; continue;
+      }
+    }
+    if (text[i] === '\\' && /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(text[i + 1] || '')) {
+      append(text[i + 1], i, i + 2); i += 2; continue;
+    }
+    const entity = text[i] === '&' && /^&(?:#\d+|#x[\da-f]+|[a-z][\da-z]+);/i.exec(text.slice(i));
+    if (entity) { append(decodeEntity(entity[0]), i, i + entity[0].length); i += entity[0].length; continue; }
+    const tag = text[i] === '<' && /^(?:<\/?[a-z][^>]*>|<!--[\s\S]*?-->)/i.exec(text.slice(i));
+    if (tag) { i += tag[0].length; continue; }
+    append(text[i], i, i + 1); i++;
+  }
+  return { text: visible, starts, ends, images };
+}
+
+module.exports = { metadata, groups, emptyColumn, serialize, applyAction, creationBlock, selectedBlock, unindent, integerWeights, resizeWeights, WEIGHT_TOTAL, plainBody, previewBody, sessionActive, editingSessions, finishEditing, weightChanges, clickSource };

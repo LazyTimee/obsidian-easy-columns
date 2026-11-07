@@ -41,11 +41,12 @@ The content moves into the left column, and an empty column appears on the right
 - Double-click an internal divider to swap its neighbors together with their content and widths.
 - Right-click an internal divider to add a column between its neighbors or choose a side to delete. Deleting a nonempty column requires a second click on the red confirmation button.
 - Right-click text inside a group to equalize its column widths.
-- Click a displayed column to open the group's Markdown source, with the cursor at the end of that column's content.
+- Click displayed text to open the group's Markdown source at the clicked position. Click an image to place the cursor at the end of its Markdown reference.
+- Click empty space to the right of a text row to edit at that row's end, or between paragraphs to edit the corresponding blank Markdown line. Empty space below the content opens the end of the column. Links keep their usual behavior.
 
 After adding a column, all widths in the group become equal. Deleting columns preserves the remaining proportions; when only one column remains, its content returns to ordinary note text.
 
-When editing the Markdown source, choose **Add column** from the context menu to split the text at the cursor into a new column. All column widths become equal immediately. Each column stores its width in its separator, such as `---column[1050]---`. Existing groups with `widths:` are converted on first edit, preserving their specified widths. A missing or invalid width leaves the block displayed as Markdown source. Separators are checked when you leave the block or editor, switch to Reading view, or open another note; manually changing the column count normalizes the specified weights. A temporary single column keeps its wrapper until editing ends.
+When editing the Markdown source, choose **Add column** from the context menu to split the text at the cursor into a new column. All column widths become equal immediately. Each column stores its width in its separator, such as `---column[1050]---`. Existing groups with `widths:` are converted after editing ends, preserving their specified widths. A missing or invalid width leaves the block displayed as Markdown source. While typing inside a tracked group, the plugin tracks positions without repeatedly parsing the document or rewriting your text. Separators are checked when you leave the block or editor, switch to Reading view, or open another note; manually changing the column count normalizes the specified weights. A temporary single column keeps its wrapper until editing ends.
 
 Reading view hides controls and prevents editing inside columns. Text selection, copying, and links remain available. Task checkboxes are changed through the Markdown source.
 
